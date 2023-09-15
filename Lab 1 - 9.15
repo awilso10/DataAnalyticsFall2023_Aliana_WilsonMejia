@@ -1,0 +1,35 @@
+library(readr)
+library(readxl)
+library(XLS)
+
+EPIdata <-read_xls("/Users/alianawilson/Desktop/Data Analytics/Labs/2010EPI_data.xls", sheet = 4)
+EPIdata
+
+attach(EPIdata)     # sets the ‘default’ object
+EPI #view EPI; because the data is 'attached', I can just call the variables
+
+tf <- is.na(EPI) #records True values if the value is NA
+E <- EPI[!tf] #filters out NA values, new array
+
+#or
+#EPI_data_csv <- read.csv("/Users/alianawilson/Desktop/Data Analytics/Labs/2010EPI_data.csv")
+#colnames(EPI_data_csv) = EPI_data_csv[1, ] # the first row will be the header
+#EPI_data_csv = EPI_data_csv[-1, ]          # removing the first row.
+EPI_data_csv
+
+Exercise 1: EPI Stats
+summary(EPI)
+fivenum(EPI, na.rm = TRUE)
+EPI_stem <- stem(EPI)
+print(EPI_stem) #prints the plot
+EPI_hist <- hist(EPI)
+print(EPI_stem) #prints the plot
+
+dens_EPI <- hist(EPI, seq(30., 95., 1.0), prob=TRUE)
+            lines(density(EPI,na.rm=TRUE,bw=1.)) 
+
+
+dens_EPI2 <- hist(EPI, seq(30., 95., 1.0), prob=TRUE)
+            lines(density(EPI,na.rm=TRUE,bw='SJ')) # or try bw=“SJ”
+
+#rug(EPI)
