@@ -1,0 +1,987 @@
+---
+title: "Project"
+author: "Aliana Wilson Mejia"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## SET UP
+```{r}
+library (readr)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+```
+
+## DATASETS
+```{r}
+#data containing vehicle crash report
+vehicle <- read.csv("/Users/alianawilson/Desktop/Data Analytics/Project/Motor_Vehicle_Collisions_-_Crashes.csv")
+vehicle <- na.omit(vehicle)
+
+#data containing crash report with pedestrian info 
+peds <- read.csv("/Users/alianawilson/Desktop/Data Analytics/Project/Motor_Vehicle_Collisions_-_Person_20231024.csv")
+peds <- na.omit(peds)
+
+#merging the vehicle with pedestrian info via the collision ID
+collisions <- merge(vehicle,peds, by="COLLISION_ID")
+collisions <- na.omit(collisions)
+#collisions <- collisions[(collisions$BOROUGH != ""),]
+
+#saw that there were some duplicates in the COLLISION_ID column; remove them
+collisions <- collisions[!duplicated(collisions$COLLISION_ID), ]
+
+#must change age to numeric 
+collisions$PERSON_AGE <- as.numeric(collisions$PERSON_AGE, na.rm = TRUE)
+
+#also filtering data to remove rows where age = 0 and sex is not provided
+collisions = collisions[(collisions$PERSON_AGE > 0) & (collisions$PERSON_SEX != ""),]
+
+#getting rid of data where the safety equipment or injury arent listed
+collisions = collisions[(collisions$SAFETY_EQUIPMENT != "") & (collisions$SAFETY_EQUIPMENT != "NA"),]
+collisions = collisions[(collisions$PERSON_INJURY != "") & (collisions$PERSON_INJURY != "NA"),]
+
+#dropping NAs
+collisions <- collisions %>% drop_na()
+
+attach(collisions)
+```
+
+## EDA
+```{r coll_boro, factor_boro, demo}
+coll_boro<- ggplot(collisions, aes(x= BOROUGH, fill = BOROUGH)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 7))+ 
+              theme(legend.title = element_text(size = 10),legend.text = element_text(size = 10)) +
+              labs(title= "Plot of Collisions by Borough",x="BOROUGH", y = "COUNT") +
+              coord_flip()
+coll_boro
+
+factor_boro <- ggplot(collisions, aes(x= CONTRIBUTING.FACTOR.VEHICLE.1, fill = BOROUGH)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(size = 10))+
+              theme(axis.text.y = element_text(size = 5))+
+              theme(legend.title = element_text(size = 10)) +
+              labs(title= "Plot of Primary Contributing Factors for Vehicles by Borough",x="CONTRIBUTING FACTOR", y =                "COUNT")+
+              coord_flip()
+factor_boro
+
+demo <- ggplot(collisions, aes(x=PERSON_AGE, color=PERSON_SEX, fill = PERSON_SEX)) +
+        geom_histogram(position="identity", alpha=0.5)+
+        scale_x_continuous(limits = c(0, 100),breaks = seq(0, 100, by = 5))+
+        scale_y_continuous(n.breaks = 15)+
+        labs(title="Plot of Persons' Age (By Sex)",x="AGE", y = "COUNT")+
+        theme_minimal()
+demo
+
+role_ped<- ggplot(collisions, aes(x= SAFETY_EQUIPMENT)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 10))+ 
+              theme(legend.title = element_text(size = 10),legend.text = element_text(size = 10)) +
+              labs(title= "Plot of Safety Equipment",x="SAFETY EQUIPMENT", y = "COUNT")
+role_ped
+
+#seeing the safety equipment used on people who were ejected
+table(collisions$EJECTION, collisions$SAFETY_EQUIPMENT)
+
+no_eject <- collisions[collisions$EJECTION != "Not Ejected",]
+demo2 <- ggplot(no_eject, aes(x=SAFETY_EQUIPMENT, color=EJECTION, fill = EJECTION)) +
+         geom_histogram(stat="count", alpha=0.5)+
+         theme_minimal()+
+         theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 10))+ 
+         labs(title="Plot of Person Injury by Safety Equipment",x= "SAFETY EQUIPMENT", y = "COUNT")
+demo2
+
+#time series of crashes over time by borough 
+collisions$CRASH.DATE <- as.Date(collisions$CRASH.DATE, '%m/%d/%y') # putting into the right date format
+collisions$CRASH.DATE <- as.POSIXct(collisions$CRASH.DATE) #converting to date-time object
+
+collisions$CRASH.YEAR <- format(collisions$CRASH.DATE, format="%Y") #extracting only the year
+# coll_eda = collisions %>% group_by(CRASH.YEAR,BOROUGH) %>%
+#                    summarise(sum_ped_inj = sum(NUMBER.OF.PEDESTRIANS.INJURED, na.rm = TRUE),
+#                              sum_ped_kill = sum(NUMBER.OF.PEDESTRIANS.KILLED, na.rm = TRUE),
+#                                sum_ppl_inj = sum(NUMBER.OF.PERSONS.INJURED,na.rm = TRUE),
+#                                sum_ppl_kill = sum(NUMBER.OF.PERSONS.KILLED,na.rm = TRUE),
+#                               .groups = 'drop')
+
+#finding the number of fatalities or injuries per accident
+collisions$TOTAL_KILLED <- with(collisions, NUMBER.OF.PEDESTRIANS.KILLED + NUMBER.OF.PERSONS.KILLED + NUMBER.OF.MOTORIST.KILLED + NUMBER.OF.CYCLIST.KILLED)
+
+collisions$TOTAL_INJURED <- with(collisions, NUMBER.OF.PEDESTRIANS.INJURED + NUMBER.OF.PERSONS.INJURED + NUMBER.OF.MOTORIST.INJURED + NUMBER.OF.CYCLIST.INJURED)
+
+coll_eda = collisions %>% group_by(CRASH.YEAR,BOROUGH) %>%
+                   summarise(inj = sum(TOTAL_INJURED, na.rm = TRUE),
+                             kill = sum(TOTAL_KILLED, na.rm = TRUE),
+                              .groups = 'drop')
+
+#could add borough 
+kill_year <- ggplot(coll_eda, aes(x = CRASH.YEAR, y = kill)) +
+             geom_bar(stat="identity")+
+             theme_minimal() +
+             theme(axis.text.x=element_text(angle=60, hjust=1))+
+             scale_y_continuous(n.breaks = 20)+
+             labs(title="Plot of Total Fatalities by Year",x="YEAR", y = "COUNT")
+kill_year
+
+inj_year <- ggplot(coll_eda, aes(x = CRASH.YEAR, y = inj)) +
+             geom_bar(stat="identity")+
+             theme_minimal() +
+             theme(axis.text.x=element_text(angle=60, hjust=1))+
+             scale_y_continuous(n.breaks = 20)+
+             labs(title="Plot of Total Injuries by Year",x="YEAR", y = "COUNT")
+inj_year
+grid.arrange(kill_year, inj_year, ncol=2)
+
+#location map
+loc_eda = collisions %>% group_by(LONGITUDE,LATITUDE) %>%
+                   summarise(inj = sum(TOTAL_INJURED, na.rm = TRUE),
+                             kill = sum(TOTAL_KILLED, na.rm = TRUE),
+                              .groups = 'drop')
+
+library(tidyverse)
+library(ggmap)
+library(devtools)
+
+register_google("AIzaSyACXOXyVivizvZNSRJhHRH0YyHaL4ewpdY")
+
+
+p <- ggmap(get_googlemap(center = "New York",
+                    zoom = 11, scale = 2,
+                    maptype ='terrain',
+                    color = 'color'))
+p + geom_point(aes(x = LONGITUDE, y = LATITUDE,  colour = inj), data = loc_eda, size = 0.5) + 
+  theme(legend.position="bottom")
+
+#CODE TAKEN FROM https://sarahleejane.github.io/learning/r/2014/09/21/plotting-data-points-on-maps-with-r.html
+library("ggrepel")
+ library(maps)
+ library(ggplot2)
+ base_world <- map_data("world")
+map_data <- ggplot()+
+  geom_polygon(data=base_world, aes(x=long, y=lat, group = group )) +
+  geom_point(data=collisions, 
+             aes(x=LONGITUDE, y=LATITUDE), colour="Deep Pink", 
+             fill="Pink",pch=21, size=5, alpha=I(0.7))+
+  theme_minimal()+
+  labs( x = "LONGITUDE", y = "LATITUDE", title = "Geographical Mapping of Collisions")
+map_data
+
+#shows that there are some points not located in NYC 
+
+#CODE TAKEN FROM https://www.r-bloggers.com/2015/03/motor-vehicle-collision-density-in-nyc/
+ny_plot=ggmap(get_map('New York, New York',zoom=12, maptype='terrain'))
+plot1=ny_plot+
+stat_density2d(data= collisions, aes(x = LONGITUDE, y = LATITUDE, alpha=.75,fill=..level..),bins = 30, geom = 'polygon')+
+guides(fill = guide_colorbar(barwidth = 1, barheight = 12)) +
+scale_alpha(guide = FALSE)+ 
+xlab(' ')+ylab(' ')+
+ggtitle('Collision Density Map')
+
+ny_plot2=ggmap(get_map('New York, New York',zoom=10, maptype='terrain'))
+plot4=ny_plot2+
+  stat_density2d(data=collisions, geom='polygon',bins =30, aes(x=LONGITUDE,y=LATITUDE,fill = BOROUGH,alpha=..level..))+
+  # scale_fill_manual(values=col_vals)+
+  #guides(fill = guide_colorbar(barwidth = 1, barheight = 12)) +
+  xlab(' ')+ylab(' ')+
+  ggtitle('NYC Vehicle Accident Density by Borough')
+plot4
+
+#remove observations not in NYC 
+collisions$LONGITUDE <- as.numeric(collisions$LONGITUDE)
+collisions$LATITUDE <- as.numeric(collisions$LATITUDE)
+
+collisions = collisions[(collisions$LONGITUDE != 0) & (collisions$LATITUDE != 0),]
+
+#running map data again to make sure that it actually removed the values 
+map_data <- ggplot()+
+  geom_polygon(data=base_world, aes(x=long, y=lat, group = group )) +
+  geom_point(data=collisions, 
+             aes(x=LONGITUDE, y=LATITUDE), colour="Deep Pink", 
+             fill="Pink",pch=21, size=5, alpha=I(0.7))+
+  theme_minimal()
+map_data
+
+#getting rid of unnecessary and duplicated variables
+# collisions = subset(collisions, select = -c(CONTRIBUTING_FACTOR_1,CONTRIBUTING_FACTOR_2,PERSON_ID,UNIQUE_ID,CONTRIBUTING.FACTOR.VEHICLE.3,CONTRIBUTING.FACTOR.VEHICLE.4,CONTRIBUTING.FACTOR.VEHICLE.5,LOCATION,CRASH_DATE,CRASH_TIME,OFF.STREET.NAME,ON.STREET.NAME,CROSS.STREET.NAME,VEHICLE.TYPE.CODE.3,VEHICLE.TYPE.CODE.4,VEHICLE.TYPE.CODE.5,COMPLAINT,VEHICLE_ID, VEHICLE.TYPE.CODE.2,EMOTIONAL_STATUS,PED_ACTION,PED_LOCATION, LONGITUDE, LATITUDE))
+```
+#LABELING VEHICLE TYPES
+```{r}
+#using unique functioon to identify the different vehicle codes used
+#saw that there were many mispelling, so I corrected some of them using this function from online https://stackoverflow.com/questions/66951301/how-do-i-correct-spelling-mistakes-in-data-frame
+
+#also removing n/a values first 
+collisions <- collisions[-(which(collisions$VEHICLE.TYPE.CODE.1 == "" | collisions$VEHICLE.TYPE.CODE.1 == "N/A" )),]
+unique(collisions$VEHICLE.TYPE.CODE.1)
+ 
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "UTILI","UTIL", "UTLIT","Utili","UT","utili") ~ "Utility Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+# collisions <- collisions %>% 
+#     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+#          VEHICLE.TYPE.CODE.1 %in% c( "CAT","bobct", "bobca","SKID-","KUBOT") ~ "Equipment Utility Vehicle"
+#         ,TRUE ~ VEHICLE.TYPE.CODE.1
+#         )
+#     )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "ambul","ambu","Ambul","amb","AMBUL","AMBU","AMB","Ambu","EMS A","ambulance","AMBULANCE","�MBU","Amb","anbul","Rescu") ~ "Ambulance"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "FIRE","FIRET","fire" ,"FDNY","FIRER","Fire","fdny","FD tr","FD TR","Firet","FIRE TRUCK","Fire Truck","NYC F","firet", "EMS TRUCK") ~ "Fire Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "USPS","usps","FEDEX","POSTA","FIRER","MAIL","Parce","DELVI","USP M","deliv","COURI","POSTO","delv","Delivery Vehicle","posta","DELV","US PO","DELIV","Delv","couri","Deliv","FED E") ~ "Parcel Delivery Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "E-Scooter","E-Sco","scoot","SCOOT","e sco","Motorscooter") ~ "Scooters (incl. Electric)"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Moped", "moped","MOPD","MOPED","E-MOT") ~ "Mopeds (incl. Electric)"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Bike","E BIK","E-BIK","E-Bik","Bicyc","Minibike","E-Bike","Motorbike","dirtb") ~ "Bikes (incl. Electric)"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Mta", "MTA B","mta B", "Bus") ~ "MTA Bus"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Pick", "pick","Pickup with mounted Camper","PK","PICKU","PICK-") ~ "Pick-up Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "forkl", "FORK","fork","FORKL","FORK-","Fork","Forkl") ~ "Forklift"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "TOW T", "Tow Truck / Wrecker","TOW T","Tow Truck","Tow T","tow","TOWTR","tower","TOWER") ~ "Tow Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "dump", "Dump","DUMP") ~ "Dump Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "sanit", "SANIT") ~ "Sanitation Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "schoo", "School Bus","nyu s","Schoo","SCHOO") ~ "School Bus/Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Tractor Truck Gasoline",  "Tractor Truck Diesel","TRAC.","tract","Tractor ","Tract","TRACT","TRAC") ~ "Tractor"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "ICE C", "ice c") ~ "Ice-Cream Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "LIMO", "limo") ~ "Limousine"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Flatb", "Flat", "FLATB","FLAT/","Flat Bed","FLAT","Flat Rack") ~ "Flatbed or Flatrack Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Stake or Rack","STAK") ~ "Stake Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "GARBA","garba","Garbage or Refuse") ~ "Garbage or Refuse Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "BOX T", "box t", "Box T", "boxtr","BOX") ~ "Box Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "Refrigerated Van","REFG","REFRI") ~ "Refrigerated Van or Truck" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "U HAU","MOVIN","Uhaul","movin","U-HAU","UHAUL") ~ "U-HAUL/Moving Vehicle" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "trk","truck","tr","TRUCK","Truck","TRK","tk") ~ "General Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("PASSE","passe","PAS") ~ "Passenger Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Trail","TRLR","trail","TRAIL","TRL","5X8 T") ~ "Trailer Vehicle" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("COMME","COMM","?omme","C0MME","Comme","com","COMER","COMMM","COM","work","WORK","WORKH","CO") ~ "Commercial Vehicle" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Concrete Mixer","cemen","CEMEN","CMIX") ~ "Concrete or Transit Mixer Vehicle" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("omni","OMNIB","omnib","omni","Omnibus","OMR","OML","bus") ~ "Omnibus (Bus)" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("PC","Pedicab","pedic") ~ "Pedicab" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("TANKE","Tanker","TANK","tank") ~ "Tank Truck" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("van","VAN","VAN T","MINIV","SPRIN","Van","Vans","Vanette") ~ "Vans" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("ELECT","Elect","elect") ~ "Electric Vehicle" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c( "unk","UNK","unkow","UNK","UNKNO") ~ "Unknown" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+# collisions <- collisions %>% 
+#     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+#          VEHICLE.TYPE.CODE.1 %in% c("SELF","self","SELF-") ~ "Self Vehicle" 
+#         ,TRUE ~ VEHICLE.TYPE.CODE.1
+#         )
+#     )
+
+
+collisions <- collisions %>% 
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("OMT","Taxi","Chassis Cab") ~ "Taxi Cabs & Chassis" 
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("LIGHT","Light","LTRL") ~ "Light Trailer Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("SUB","subur","SUBUR", "Subn", "subn") ~ "Suburban Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Crane","CRANE") ~ "Crane"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Motorized home","Motor home","Motor Home","Van Camper","R/V C","RV") ~ "Motorized Home Vehicle"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>%
+    mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("SEMI","semi-","MACK","mack") ~ "Semi-trailer Truck"
+        ,TRUE ~ VEHICLE.TYPE.CODE.1
+        )
+    )
+
+collisions <- collisions %>% 
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("const","BULLD","Lift Boom","CONST","LIEBH") ~ "Construction Vehicle" 
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>%
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("STERL","marke","Lift Boom","CONST","Marke","MARK") ~ "Marque (Marke or Sterling) Vehicle"
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("PSH","Shove") ~ "Power Shovel Vehicle" 
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>%
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("CITY","NYC D", "NEW Y","NYPD","GOVER","nycta") ~ "City-related Vehicle"
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>%
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("4DS","SEDAN", "Sedan", "4 dr sedan","3 doo","3-door","3-Door","4 dr","2 dr sedan","4D","4DR") ~ "Sedan (General)"
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Lunch Wagon","Wagon") ~ "Wagon" 
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("4whee","2 WHE", "Multi-Wheeled Vehicle", "18 WH") ~ "Multi-Wheeled Vehicle" 
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(VEHICLE.TYPE.CODE.1 = case_when(
+         VEHICLE.TYPE.CODE.1 %in% c("Farm Vehicle","Bulk Agriculture", "Livestock Rack") ~ "Farm Utility Vehicle" 
+         ,TRUE ~ VEHICLE.TYPE.CODE.1
+         )
+    )
+
+unique(collisions$VEHICLE.TYPE.CODE.1)
+
+#picking the top 20 vehicle codes 
+keep_code <- collisions %>% count(collisions$VEHICLE.TYPE.CODE.1, sort = TRUE)
+#counts the number of occurrences of each vehicle type and then sorting it 
+#choosing the top 20 
+keep_code <- keep_code %>% slice(1:20)
+colnames(keep_code)[colnames(keep_code) == "collisions$VEHICLE.TYPE.CODE.1"] ="code"
+keep_code <- keep_code[-c(2)]
+View(keep_code)
+
+
+#removing data that doesn't contain these top 20 
+collisions <-collisions[collisions$VEHICLE.TYPE.CODE.1 %in% keep_code$code, ]
+collisions
+unique(collisions$VEHICLE.TYPE.CODE.1)
+```
+##GROUPING VEHICLE TYPES
+```{r}
+collisions$vehicle_code <-  collisions$VEHICLE.TYPE.CODE.1
+
+collisions<- collisions %>% 
+     mutate(vehicle_code = case_when(
+         vehicle_code %in% c("Pick-up Truck","Carry All","Flatbed or Flatrack Truck","Tank Truck","Dump Truck","Tow Truck","Refrigerated Van or Truck" ,"Box Truck","Fire Truck", "Tractor") ~ "Truck"
+         ,TRUE ~ vehicle_code
+         )
+    )
+
+unique(collisions$vehicle_code)
+
+#plot of vehicle codes 
+veh_codes<- ggplot(collisions, aes(x= vehicle_code)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 10))+ 
+              theme(legend.title = element_text(size = 10),legend.text = element_text(size = 10)) +
+              scale_y_continuous(n.breaks = 20)+
+              labs(title= "Plot of General Vehicle Codes",x="VEHICLE CODES", y = "COUNT")
+veh_codes
+```
+##GROUPING CONTRIBUTING FACTORS
+```{r}
+#removing n/as and empty rows
+collision <- collisions[-(which(collisions$CONTRIBUTING.FACTOR.VEHICLE.1 == "")),]
+
+#seeing the different reasons
+unique(collision$CONTRIBUTING.FACTOR.VEHICLE.1)
+
+#fixing a misspelling
+collisions <- collisions %>% 
+     mutate(CONTRIBUTING.FACTOR.VEHICLE.1 = case_when(
+         CONTRIBUTING.FACTOR.VEHICLE.1  %in% c("Illnes") ~ "Illness"
+         ,TRUE ~ CONTRIBUTING.FACTOR.VEHICLE.1
+         )
+    )
+collisions$factor_code <-  collisions$CONTRIBUTING.FACTOR.VEHICLE.1
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Alcohol Involvement","Drugs (illegal)","Prescription Medication","Lost Consciousness","Physical Disability","Fatigued/Drowsy","Fell Asleep", "Illness" ) ~ "Impaired Driving"
+         ,TRUE ~ factor_code
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Brakes Defective","Accelerator Defective","Steering Failure","Tire Failure/Inadequate","Headlights Defective ","Windshield Inadequate","Tow Hitch Defective","Other Lighting Defects","Headlights Defective") ~ "Auto Defects"
+         ,TRUE ~ factor_code
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Driver Inattention/Distraction","Passenger Distraction","Outside Car Distraction","Listening/Using Headphones","Cell Phone (hands-free)","Texting ","Cell Phone (hand-Held)","Using On Board Navigation Device","Reaction to Uninvolved Vehicle","Pedestrian/Bicyclist/Other Pedestrian Error/Confusion", "Eating or Drinking", "Other Electronic Device","Texting") ~ "Distracted Driver or Pedestrian"
+         ,TRUE ~ factor_code
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Failure to Yield Right-of-Way","Unsafe Lane Changing","Passing or Lane Usage Improper","Passing Too Closely","Turning Improperly","Following Too Closely","Backing Unsafely","Aggressive Driving/Road Rage", "Failure to Keep Right","Unsafe Lane Changing","Unsafe Speed","Traffic Control Disregarded") ~ "Driver Recklessness"
+         ,TRUE ~ factor_code
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Lane Marking Improper/Inadequate","Traffic Control Device Improper/Non-Working","Animals Action","Pavement Slippery","Pavement Defective","Obstruction/Debris","Driverless/Runaway Vehicle","Shoulders Defective/Improper") ~ "Hazardous Road Condition"
+         ,TRUE ~ factor_code
+         )
+    )
+
+collisions <- collisions %>% 
+     mutate(factor_code = case_when(
+         factor_code %in% c("Other Vehicular","Tinted Windows","Glare","Vehicle Vandalism","Oversized Vehicle", "Driver Inexperience","View Obstructed/Limited") ~ "Other Vehicular Factor"
+         ,TRUE ~ factor_code
+         )
+    )
+
+unique(collisions$factor_code)
+
+collisions <- collisions[-(which(collisions$factor_code == "")),]
+
+library(RColorBrewer)
+#plot of contributing factors 
+factors_boro <- ggplot(collisions, aes(x= factor_code)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 10))+ 
+              theme(legend.title = element_text(size = 10),legend.text = element_text(size = 10)) +
+              scale_y_continuous(n.breaks = 10)+
+              labs(title= "Plot of Contributing Factor",x="CONTRIBUTING FACTOR", y = "COUNT")
+factors_boro
+```
+
+## CONVERTING AND GROUPING CRASH TIME OF DAY 
+```{r}
+library(lubridate)
+
+as.character(collisions$CRASH.TIME)
+collisions$day_code <- collisions$CRASH.TIME
+
+collisions <- collisions %>%
+  mutate(hour_admit = hour(strptime(day_code, format = "%H:%M"))) %>%
+  mutate(day_code = case_when(
+    hour_admit > 06 & hour_admit < 12 ~ "Morning",
+    hour_admit >= 12 & hour_admit < 17 ~ "Afternoon",
+    hour_admit >= 17 & hour_admit < 21 ~ "Evening",
+    hour_admit >=21 | hour_admit <= 6 ~ "Night"))
+
+level_order <- c('Morning', 'Afternoon', 'Evening', "Night") 
+
+#plot of time of day
+time_day<- ggplot(collisions, aes(x= day_code)) + 
+              geom_histogram(stat = 'count')+ 
+              theme_minimal()+
+              theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, size = 10))+ 
+              theme(legend.title = element_text(size = 10),legend.text = element_text(size = 10)) +
+              scale_y_continuous(n.breaks = 20)+
+              scale_x_discrete(limits = level_order) +
+              labs(title= "Plot of Crashes by Time of Day",x="TIME OF DAY", y = "COUNT")
+time_day
+```
+## MODEL: LINEAR DISCRIMINATE ANALYSIS 
+```{r}
+require(scales)
+require(gridExtra)
+
+library(MASS)
+library(car)
+library(caret)
+library(klaR)
+library(rattle)
+
+#SETUP 
+
+model_data <- collisions[c("BOROUGH","PERSON_INJURY","PERSON_TYPE", "PERSON_AGE", "EJECTION", "BODILY_INJURY", "SAFETY_EQUIPMENT", "PERSON_SEX", "VEHICLE.TYPE.CODE.1", "factor_code","day_code", "POSITION_IN_VEHICLE")]
+
+#converting person_injury to a factor
+# model_data$PERSON_INJURY <-  as.factor(model_data$PERSON_INJURY)
+# table(model_data$PERSON_INJURY)
+
+#model 
+lda_model <- lda(PERSON_INJURY~., data = model_data) 
+lda_model
+
+#first discriminant
+lda.values <- predict(lda_model)
+str(lda.values)
+
+i <- sample(10000) # random row
+head(cbind(round(lda.values$posterior[i,], 3), class=lda.values$class[i]))
+
+#first discriminant
+ldahist(lda.values$x[,1], g = model_data$PERSON_INJURY)
+
+#second discriminant
+ldahist(lda.values$x[,2], g = model_data$PERSON_INJURY)
+
+#overall 
+ldahist(lda.values$x[,], g = model_data$PERSON_INJURY)
+
+#plot showing how the groups separate
+plot(lda_model, col=as.numeric(model_data$PERSON_INJURY)) # assign color code based on factor code
+
+#confusion matrix
+conf <- table(list(predicted = lda.values$class, observed = model_data$PERSON_INJURY))
+conf
+
+#more stats about the confusion matrix
+confusionMatrix(conf)
+
+#scatterplot of discriminant function with groups circled 
+gg_ordiplot(lda.values$x, model_data$PERSON_INJURY)
+```
+## TURNING VARIABLES INTO NUMERIC VALUES 
+```{r}
+library("fastDummies")
+library("janitor")
+droplevels(model_data)
+clean_names(model_data)
+true_data <- fastDummies::dummy_cols(model_data,remove_first_dummy = TRUE)
+clean_names(true_data)
+# knitr::kable(true_data)
+```
+
+
+
+#MODEL #2: RANDOM FOREST 
+```{r}
+#install.packages("randomForest")
+library(randomForest)
+library(MASS)
+library(tree)
+library("randomForestExplainer")
+
+set.seed(50235)
+janitor::clean_names(true_data)
+names(true_data) <- make.names(names(true_data))
+rf <-randomForest(PERSON_INJURY ~., data = true_data, ntree=500) 
+print(rf)
+
+
+# creating a sample from the  dataset
+s_coll <- sample(nrow(true_data), 0.7 * nrow(true_data),replace = FALSE)
+
+# create testing and training sets
+coll_train <-true_data[s_coll,]
+coll_test <-true_data[-s_coll,]
+
+# generate the model
+
+model1 <- randomForest(PERSON_INJURY~., data = coll_train, importance = TRUE)
+model1
+
+coll_test <- rbind(coll_test[1, ] , coll_test)
+coll_test <- coll_test[-1,]
+    
+predTest <- predict(model1, coll_test, type = "class")
+tab <- table(predTest,coll_test$PERSON_INJURY)
+tab
+
+#error rate
+sum(diag(tab))/sum(tab)
+
+#improved model 
+model2 <- randomForest(PERSON_INJURY~., data = coll_train, mtry = 8, importance = TRUE, localImp = TRUE)
+model2
+
+
+ValidSet2 <- rbind(coll_train[1, ] , coll_test)
+    coll_test <- coll_test[-1,]
+    
+predTest2 <- predict(model2, coll_test, type = "class")
+ tab2 <- table(predTest2,coll_test$PERSON_INJURY)
+ tab2
+ 
+  #error rate
+sum(diag(tab2))/sum(tab2)
+
+#confusion matrix
+rf_conf <- table(list(predicted = predTest,observed = coll_test$PERSON_INJURY))
+rf_conf
+
+#more stats about the confusion matrix
+confusionMatrix(rf_conf)
+
+importance <- measure_importance(model2)
+importance
+
+plot_multi_way_importance(importance, size_measure = "no_of_nodes")
+
+library(randomForestExplainer)
+explain_forest(model2, interactions = TRUE, data = true_data)
+```
+## MODEL 3: DECISION TREE
+```{r}
+#creating a decision tree model to determine factors affecting GPA
+library("rpart")
+library("rpart.plot")
+library("rattle")
+
+dim(model_data)
+# creating a sample from the dataset
+coll_tree <- sample(98000,100)
+coll_tree
+
+#testing and training sets
+train_tree <- true_data[coll_tree,]
+test_tree <- true_data[-coll_tree,] 
+
+#decision tree 
+inj_tree <- rpart(PERSON_INJURY ~.,train_tree,
+               method = "class", parms = list(split = 'information'))
+inj_tree
+
+summary(inj_tree)
+
+#plotting the decision tree model using rpart.plot() function
+#rpart.plot(inj_tree, type = 4)
+fancyRpartPlot(inj_tree)
+
+#seeing variable importance in tree
+sort(inj_tree$variable.importance,decreasing = TRUE)
+
+#pruning labeled decision tree 
+printcp(inj_tree)
+cp <- inj_tree$cptable[which.min(inj_tree$cptable[,"xerror"]),"CP"]
+cp
+
+#plotting pruned tree
+pruned_labeledtree <- prune(inj_tree,cp)
+rpart.plot(pruned_labeledtree, type = 4)
+
+summary(pruned_labeledtree)
+printcp(pruned_labeledtree)
+
+#install.packages("yardstick")
+library(yardstick)
+```
+
+## MODEl 4:LOGISITC REGRESSION
+```{r}
+
+# model_data$PERSON_INJURY <- as.factor(model_data$PERSON_INJURY)
+# contrasts(model_data$PERSON_INJURY)
+# contrasts(model_data$PERSON_INJURY) = contr.treatment(3)
+
+lm_data<-sample(2, nrow(true_data),  
+                   replace = T,  
+                 prob = c(0.7, 0.3)) 
+train <-true_data[lm_data == 1,] 
+test <-true_data[lm_data == 2,]
+
+mymodel<-glm(PERSON_INJURY ~.,  
+                        data = train,  
+                        family = 'quasibinomial') 
+# summary(mymodel)
+
+#prediction
+p1<-predict(mymodel, train,  
+            type = 'response') 
+str(p1)
+
+# confusion Matrix  
+# $Misclassification error -Training data   
+pre1<-ifelse(p1 > 0.5, 1, 0) 
+table<-table(Prediction = pre1,  
+             Actual = train$PERSON_INJURY)  
+table 
+
+#misclassification error
+
+1 - sum(diag(table)) / sum(table)
+
+
+## extra idk 
+# coll_2$PERSON_SEX <- as.factor(coll_2$PERSON_SEX)
+# contrasts(coll_2$PERSON_SEX)
+# contrasts(coll_2$PERSON_SEX) = contr.treatment(3)
+# 
+# coll_2$BOROUGH <- as.factor(coll_2$BOROUGH)
+# contrasts(coll_2$BOROUGH)
+# contrasts(coll_2$BOROUGH) = contr.treatment(5)
+# 
+# coll_2$time_period <- as.factor(coll_2$time_period)
+# contrasts(coll_2$time_period)
+# contrasts(coll_2$time_period) = contr.treatment(4)
+```
+
+## MODEL 5: MULTINOMIAL REGRESSION
+```{r}
+#redoing model another way 
+library(tidyverse)
+library(tidymodels)
+
+model_data$PERSON_INJURY <- as.factor(model_data$PERSON_INJURY)
+
+model_fit <- multinom_reg() |>
+  fit(PERSON_INJURY ~., data = model_data)
+model_fit
+
+inj_preds <- model_fit |> 
+  augment(new_data = model_data)
+inj_preds
+
+# summary(multinom)
+exp(coef(model_fit))
+round(fitted(model_fit), 2)
+
+#confusion matrix
+conf_mat(inj_preds,truth = PERSON_INJURY, estimate = .pred_class)
+
+#accuracy
+accuracy(inj_preds,truth = PERSON_INJURY, estimate = .pred_class)
+
+#area under the ROC
+roc_auc(inj_preds, truth = PERSON_INJURY, ".pred_Injured",".pred_Killed", ".pred_Unspecified")
+
+#ROC curve 
+roc_inj <- roc_curve(inj_preds, truth = PERSON_INJURY, ".pred_Injured",".pred_Killed", ".pred_Unspecified") |> 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, color = .level)) +
+  geom_line(size = 1, alpha = 0.7) +
+  geom_abline(slope = 1, linetype = "dotted") +
+  theme_minimal()+
+  coord_fixed() +
+  labs(color = NULL)
+roc_inj 
+
+```
+
+
